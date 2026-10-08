@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Snowy Prints • AutoPrint AI Farm Studio</title>
+<title>Snowy Prints • AutoPrint AI Farm Studio v3.2</title>
 <meta name="theme-color" content="#07111d">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%2387e8ff'/%3E%3Cstop offset='1' stop-color='%239c8cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='18' fill='%23070b12'/%3E%3Cpath d='M32 10v44M13 21l38 22M13 43l38-22M20 12l12 8 12-8M20 52l12-8 12 8' stroke='url(%23g)' stroke-width='4' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
 <style>
@@ -231,8 +231,10 @@ button,input,select{font:inherit}.shell{max-width:1540px;margin:auto;padding:22p
       <div class="card cardpad" style="margin-top:16px;position:sticky;top:12px">
         <div class="cardtitle"><h2>Build output</h2><span class="tag" id="readyTag">waiting</span></div>
         <div id="buildNotice" class="notice warn">Load G-code before generating an output.</div>
+        <div id="packageNotice" class="notice warn">For Bambu / Orca filament mapping, load the original sliced .3mf or .gcode.3mf package.</div>
         <div class="buttons">
-          <button id="generate" class="btn full" disabled>Build AI-optimized repeat G-code</button>
+          <button id="generatePackage" class="btn blue full" disabled>Build mapped Bambu / Orca .gcode.3mf</button>
+          <button id="generate" class="btn full" disabled>Build raw AI-optimized repeat G-code</button>
           <button id="dryRun" class="btn secondary" disabled>Download eject-only test</button>
           <button id="analysisBtn" class="btn secondary" disabled>Open preview tab</button>
         </div>
@@ -250,6 +252,10 @@ const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 const num=(id,fallback=0)=>{const v=Number($(id).value);return Number.isFinite(v)?v:fallback};
 const fmt=(n,d=1)=>Number.isFinite(n)?Number(n.toFixed(d)).toString():'—';
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const te=new TextEncoder();
+let sourceArchive=null;
+let sourceArchiveGcodePath=null;
+let sourceArchiveNames=new Set();
 const PROFILES=[
  {id:'ender3',brand:'Creality',name:'Ender-3 / Pro',x:220,y:220,z:250,kin:'bedslinger',fw:'Marlin',maxV:180,maxA:2500,aliases:['ender-3','ender 3 pro','ender3 pro']},
  {id:'ender3v2',brand:'Creality',name:'Ender-3 V2',x:220,y:220,z:250,kin:'bedslinger',fw:'Marlin',maxV:180,maxA:2500,aliases:['ender-3 v2','ender 3 v2','ender3v2']},
@@ -332,18 +338,102 @@ function updateBuildNotice(){if(!analysis||!lastPrediction)return;const s=readSe
 function drawBed(){const c=$('bedCanvas'),ctx=c.getContext('2d');const s=readSettings(),p=s.p,W=c.width,H=c.height,pad=48,scale=Math.min((W-pad*2)/p.x,(H-pad*2)/p.y),ox=(W-p.x*scale)/2,oy=(H-p.y*scale)/2;ctx.clearRect(0,0,W,H);ctx.fillStyle='#070b10';ctx.fillRect(0,0,W,H);ctx.fillStyle='#0d151f';ctx.strokeStyle='#2b3a4d';ctx.lineWidth=2;ctx.fillRect(ox,oy,p.x*scale,p.y*scale);ctx.strokeRect(ox,oy,p.x*scale,p.y*scale);ctx.lineWidth=1;ctx.strokeStyle='rgba(68,88,112,.24)';for(let x=0;x<=p.x;x+=20){ctx.beginPath();ctx.moveTo(ox+x*scale,oy);ctx.lineTo(ox+x*scale,oy+p.y*scale);ctx.stroke()}for(let y=0;y<=p.y;y+=20){ctx.beginPath();ctx.moveTo(ox,oy+y*scale);ctx.lineTo(ox+p.x*scale,oy+y*scale);ctx.stroke()}if(analysis&&analysis.w>0){ctx.fillStyle='rgba(98,185,255,.16)';ctx.strokeStyle='#62b9ff';ctx.lineWidth=2;ctx.fillRect(ox+analysis.minX*scale,oy+(p.y-analysis.maxY)*scale,analysis.w*scale,analysis.d*scale);ctx.strokeRect(ox+analysis.minX*scale,oy+(p.y-analysis.maxY)*scale,analysis.w*scale,analysis.d*scale);const parts=analysis.parts.length?analysis.parts:[];parts.slice(0,16).forEach((q,i)=>{ctx.strokeStyle=i%2?'#a58cff':'#63eba6';ctx.setLineDash([7,5]);ctx.strokeRect(ox+q.minX*scale,oy+(p.y-q.maxY)*scale,Math.max(2,(q.maxX-q.minX)*scale),Math.max(2,(q.maxY-q.minY)*scale));ctx.setLineDash([])});const choice=chooseEjection(s),cx=ox+(analysis.minX+analysis.maxX)/2*scale,cy=oy+(p.y-(analysis.minY+analysis.maxY)/2)*scale;ctx.strokeStyle='#ffbd66';ctx.fillStyle='#ffbd66';ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(cx,cy);let ex=cx,ey=cy;if(choice.axis==='X')ex=choice.dir==='max'?ox+p.x*scale-8:ox+8;else ey=choice.dir==='max'?oy+8:oy+p.y*scale-8;ctx.lineTo(ex,ey);ctx.stroke();const ang=Math.atan2(ey-cy,ex-cx);ctx.beginPath();ctx.moveTo(ex,ey);ctx.lineTo(ex-15*Math.cos(ang-.55),ey-15*Math.sin(ang-.55));ctx.lineTo(ex-15*Math.cos(ang+.55),ey-15*Math.sin(ang+.55));ctx.closePath();ctx.fill()}ctx.fillStyle='#8290a3';ctx.font='22px system-ui';ctx.fillText('0,0',ox,oy+p.y*scale+30);ctx.fillText(`${p.x} × ${p.y} mm`,ox+p.x*scale-150,oy+p.y*scale+30)}
 function buildOutput(){const s=readSettings(),o=optimizeSource(),seq=ejectionSequence(),parts=[];if(s.metaHeader){parts.push('; ========================================================', '; Snowy Prints — AutoPrint AI Farm Studio',`; Source: ${sourceName}`,`; Detected printer: ${analysis.printerDetection.profile?.name||'Unknown'} (${Math.round(analysis.printerDetection.confidence)}% confidence)`,`; Output profile: ${s.p.name} / ${s.p.fw}`,`; Predicted single-cycle success: ${lastPrediction?.score??'—'}%`,`; Predicted whole-batch success: ${lastPrediction?.batch??'—'}%`,`; Optimizer changes: ${o.changes.length}`,`; Smart ejection: ${lastPrediction?.choice.axis||'—'} axis / ${lastPrediction?.choice.dir||'—'} side`,'; IMPORTANT: heuristic only. Test ejection while supervising.','; ========================================================','')}for(let i=1;i<=s.copies;i++){parts.push(`\n; ================= COPY ${i} / ${s.copies} =================\n`,o.text);if(i<s.copies||s.ejectFinal)parts.push(seq)}return parts.join('\n')}
 function downloadText(text,name){const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000)}
-function baseName(){return sourceName.replace(/(\.gcode\.gz|\.(gcode|gc|gco|g|nc|ngc|tap|cnc|mcode|txt|gx|gz|zip|3mf|ufp))$/i,'')||'print'}
+function downloadBytes(bytes,name,type='application/octet-stream'){const blob=new Blob([bytes],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),8000)}
+function baseName(){return sourceName.replace(/(\.gcode\.3mf|\.gcode\.gz|\.(gcode|gc|gco|g|nc|ngc|tap|cnc|mcode|txt|gx|gz|zip|3mf|ufp))$/i,'')||'print'}
+function updatePackageNotice(){const el=$('packageNotice');if(!el)return;if(sourceArchive&&sourceArchiveGcodePath){const md5Path=sourceArchiveGcodePath+'.md5';el.className='notice ok';el.textContent=`Mapped package available: ${sourceArchiveGcodePath}. Original project, filament and slice metadata will be preserved${sourceArchiveNames.has(md5Path)?' and the G-code MD5 will be regenerated':', and an MD5 entry will be added for the modified plate G-code'}.`;$('generatePackage').disabled=!analysis}else{el.className='notice warn';el.textContent='Mapped Bambu / Orca export needs the original sliced .3mf or .gcode.3mf. Raw G-code does not contain the project / filament mapping metadata needed for a trustworthy AMS-mapped package.';if($('generatePackage'))$('generatePackage').disabled=true}}
+async function buildMappedPackage(){if(!analysis||!sourceArchive||!sourceArchiveGcodePath){updatePackageNotice();return}const btn=$('generatePackage'),old=btn.textContent;btn.disabled=true;btn.textContent='Building mapped package…';try{const outText=buildOutput(),gBytes=te.encode(outText),repl=new Map();repl.set(sourceArchiveGcodePath,gBytes);const md5Path=sourceArchiveGcodePath+'.md5';repl.set(md5Path,te.encode(md5Hex(gBytes)));const rebuilt=await rebuildZipPreservingEntries(sourceArchive,repl);downloadBytes(rebuilt,baseName()+`_SNOWY_AI_REPEAT_x${readSettings().copies}.gcode.3mf`,'model/3mf');$('packageNotice').className='notice ok';$('packageNotice').textContent='Mapped .gcode.3mf built. Original archive metadata was preserved and the modified plate G-code checksum was regenerated.'}catch(err){$('packageNotice').className='notice bad';$('packageNotice').textContent='Mapped package export failed: '+(err?.message||String(err))}finally{btn.textContent=old;btn.disabled=!analysis||!sourceArchive}}
 function renderPreview(){if(!analysis)return;$('previewCode').textContent=ejectionSequence();$('previewDialect').textContent=readSettings().p.fw;drawBed()}
-function updateAll(){if(!analysis)return;renderPrediction();renderOptimizer();renderPreview();updateDetectionUI();renderLearning()}
+function updateAll(){if(!analysis)return;renderPrediction();renderOptimizer();renderPreview();updateDetectionUI();renderLearning();updatePackageNotice()}
 const td=new TextDecoder('utf-8',{fatal:false});const TEXT_EXT_RE=/\.(gcode|gc|gco|g|nc|ngc|tap|cnc|mcode|txt)$/i;const MODEL_EXT_RE=/\.(stl|obj|amf|step|stp|3ds|ply)$/i;
 function bytesLookText(b){let n=Math.min(b.length,120000),bad=0,nul=0;for(let i=0;i<n;i++){let v=b[i];if(v===0)nul++;if(v<9||(v>13&&v<32))bad++}return n===0||((nul/n)<.002&&(bad/n)<.03)}
 function gcodeSignal(t){let L=t.slice(0,250000).replace(/\r/g,'').split('\n'),sig=0,seen=0;for(let raw of L){let l=raw.trim();if(!l)continue;seen++;if(/^([GMT]\d+|;|\(|%|N\d+\s+[GMT]\d+|SET_|PRINT_START|START_PRINT)/i.test(l))sig++;if(seen>=500)break}return seen?sig/seen:0}
 async function decompressBytes(bytes,format){if(typeof DecompressionStream==='undefined')throw new Error('This browser cannot decompress '+format+' locally. Try a Chromium-based browser or export normal .gcode.');const ds=new DecompressionStream(format),ab=await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();return new Uint8Array(ab)}
 function findEOCD(b){const dv=new DataView(b.buffer,b.byteOffset,b.byteLength),start=Math.max(0,b.length-65557);for(let i=b.length-22;i>=start;i--)if(dv.getUint32(i,true)===0x06054b50)return i;return-1}
-async function extractGcodeFromZip(bytes){const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),e=findEOCD(bytes);if(e<0)throw new Error('ZIP/3MF structure could not be read.');const count=dv.getUint16(e+10,true),off=dv.getUint32(e+16,true);let pos=off,cands=[];for(let i=0;i<count&&pos+46<=bytes.length;i++){if(dv.getUint32(pos,true)!==0x02014b50)break;let method=dv.getUint16(pos+10,true),cs=dv.getUint32(pos+20,true),us=dv.getUint32(pos+24,true),nl=dv.getUint16(pos+28,true),xl=dv.getUint16(pos+30,true),cl=dv.getUint16(pos+32,true),lo=dv.getUint32(pos+42,true),fn=td.decode(bytes.slice(pos+46,pos+46+nl));if(/\.(gcode|gc|gco|g|nc|ngc|tap|txt)$/i.test(fn))cands.push({fn,method,cs,us,lo});pos+=46+nl+xl+cl}if(!cands.length)throw new Error('Archive loaded, but no sliced G-code was found. A project/model 3MF still needs slicing first.');cands.sort((a,b)=>b.us-a.us);const c=cands[0];if(dv.getUint32(c.lo,true)!==0x04034b50)throw new Error('Embedded G-code entry is damaged.');const nl=dv.getUint16(c.lo+26,true),xl=dv.getUint16(c.lo+28,true),start=c.lo+30+nl+xl,raw=bytes.slice(start,start+c.cs);let out;if(c.method===0)out=raw;else if(c.method===8)out=await decompressBytes(raw,'deflate-raw');else throw new Error('Unsupported ZIP compression method '+c.method+'.');return{text:td.decode(out),inner:c.fn,type:'archive → G-code'}}
+function parseZipEntries(bytes){
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),e=findEOCD(bytes);
+  if(e<0)throw new Error('ZIP/3MF structure could not be read.');
+  const count=dv.getUint16(e+10,true),off=dv.getUint32(e+16,true);
+  let pos=off,entries=[];
+  for(let i=0;i<count&&pos+46<=bytes.length;i++){
+    if(dv.getUint32(pos,true)!==0x02014b50)throw new Error('ZIP central directory is damaged or unsupported.');
+    const versionMade=dv.getUint16(pos+4,true),versionNeed=dv.getUint16(pos+6,true),flags=dv.getUint16(pos+8,true),method=dv.getUint16(pos+10,true),mtime=dv.getUint16(pos+12,true),mdate=dv.getUint16(pos+14,true),crc=dv.getUint32(pos+16,true),cs=dv.getUint32(pos+20,true),us=dv.getUint32(pos+24,true),nl=dv.getUint16(pos+28,true),xl=dv.getUint16(pos+30,true),cl=dv.getUint16(pos+32,true),internal=dv.getUint16(pos+36,true),external=dv.getUint32(pos+38,true),lo=dv.getUint32(pos+42,true);
+    const fn=td.decode(bytes.slice(pos+46,pos+46+nl));
+    if(flags&1)throw new Error('Encrypted ZIP entries are not supported.');
+    if(dv.getUint32(lo,true)!==0x04034b50)throw new Error('ZIP local entry is damaged: '+fn);
+    const lnl=dv.getUint16(lo+26,true),lxl=dv.getUint16(lo+28,true),dataStart=lo+30+lnl+lxl;
+    entries.push({fn,versionMade,versionNeed,flags,method,mtime,mdate,crc,cs,us,internal,external,lo,dataStart,raw:bytes.slice(dataStart,dataStart+cs)});
+    pos+=46+nl+xl+cl;
+  }
+  return entries;
+}
+async function extractZipEntry(entry){
+  if(entry.method===0)return entry.raw;
+  if(entry.method===8)return decompressBytes(entry.raw,'deflate-raw');
+  throw new Error('Unsupported ZIP compression method '+entry.method+' for '+entry.fn+'.');
+}
+async function extractGcodeFromZip(bytes){
+  const entries=parseZipEntries(bytes);
+  let cands=entries.filter(e=>/\.(gcode|gc|gco|g|nc|ngc|tap|txt)$/i.test(e.fn));
+  if(!cands.length)throw new Error('Archive loaded, but no sliced G-code was found. A project/model 3MF still needs slicing first.');
+  cands.sort((a,b)=>{const ap=/^Metadata\/plate_\d+\.gcode$/i.test(a.fn)?1:0,bp=/^Metadata\/plate_\d+\.gcode$/i.test(b.fn)?1:0;return bp-ap||b.us-a.us});
+  const c=cands[0],out=await extractZipEntry(c);
+  return{text:td.decode(out),inner:c.fn,type:/^Metadata\/plate_\d+\.gcode$/i.test(c.fn)?'sliced 3MF → plate G-code':'archive → G-code',archive:{bytes,gcodePath:c.fn,names:new Set(entries.map(e=>e.fn))}};
+}
+const CRC_TABLE=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);t[n]=c>>>0}return t})();
+function crc32(bytes){let c=0xffffffff;for(let i=0;i<bytes.length;i++)c=CRC_TABLE[(c^bytes[i])&255]^(c>>>8);return(c^0xffffffff)>>>0}
+function md5Hex(bytes){
+  const len=bytes.length,padded=Math.ceil((len+9)/64)*64,data=new Uint8Array(padded);data.set(bytes);data[len]=0x80;
+  const dv=new DataView(data.buffer),bits=len*8;dv.setUint32(padded-8,bits>>>0,true);dv.setUint32(padded-4,Math.floor(bits/4294967296)>>>0,true);
+  const S=[7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  const K=new Uint32Array(64);for(let i=0;i<64;i++)K[i]=Math.floor(Math.abs(Math.sin(i+1))*4294967296)>>>0;
+  const rol=(x,n)=>((x<<n)|(x>>>(32-n)))>>>0;
+  let a0=0x67452301,b0=0xefcdab89,c0=0x98badcfe,d0=0x10325476;
+  for(let off=0;off<padded;off+=64){
+    const M=new Uint32Array(16);for(let j=0;j<16;j++)M[j]=dv.getUint32(off+j*4,true);
+    let A=a0,B=b0,C=c0,D=d0;
+    for(let i=0;i<64;i++){
+      let F,g;
+      if(i<16){F=(B&C)|((~B)&D);g=i}
+      else if(i<32){F=(D&B)|((~D)&C);g=(5*i+1)%16}
+      else if(i<48){F=B^C^D;g=(3*i+5)%16}
+      else{F=C^(B|(~D));g=(7*i)%16}
+      const tmp=D;D=C;C=B;B=(B+rol((A+(F>>>0)+K[i]+M[g])>>>0,S[i]))>>>0;A=tmp;
+    }
+    a0=(a0+A)>>>0;b0=(b0+B)>>>0;c0=(c0+C)>>>0;d0=(d0+D)>>>0;
+  }
+  let out='';for(const v of [a0,b0,c0,d0])for(let i=0;i<4;i++)out+=((v>>>(i*8))&255).toString(16).padStart(2,'0');return out.toUpperCase();
+}
+function concatBytes(parts){let total=parts.reduce((n,p)=>n+p.length,0),out=new Uint8Array(total),o=0;for(const p of parts){out.set(p,o);o+=p.length}return out}
+function zipU16(v){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,v,true);return b}
+function zipU32(v){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,v>>>0,true);return b}
+async function rebuildZipPreservingEntries(originalBytes,replacements){
+  const entries=parseZipEntries(originalBytes),locals=[],centrals=[];let offset=0;
+  for(const e of entries){
+    const name=te.encode(e.fn);let raw=e.raw,method=e.method,crc=e.crc,cs=e.cs,us=e.us;
+    if(replacements.has(e.fn)){const data=replacements.get(e.fn);raw=data;method=0;crc=crc32(data);cs=data.length;us=data.length}
+    const flags=(e.flags&~0x0008)|0x0800;
+    const local=concatBytes([zipU32(0x04034b50),zipU16(Math.max(20,e.versionNeed||20)),zipU16(flags),zipU16(method),zipU16(e.mtime),zipU16(e.mdate),zipU32(crc),zipU32(cs),zipU32(us),zipU16(name.length),zipU16(0),name,raw]);
+    locals.push(local);
+    const central=concatBytes([zipU32(0x02014b50),zipU16(e.versionMade||20),zipU16(Math.max(20,e.versionNeed||20)),zipU16(flags),zipU16(method),zipU16(e.mtime),zipU16(e.mdate),zipU32(crc),zipU32(cs),zipU32(us),zipU16(name.length),zipU16(0),zipU16(0),zipU16(0),zipU16(e.internal||0),zipU32(e.external||0),zipU32(offset),name]);
+    centrals.push(central);offset+=local.length;
+  }
+  // Allow a checksum entry to be added if a sliced Bambu package is missing it.
+  for(const [fn,data] of replacements){
+    if(entries.some(e=>e.fn===fn))continue;
+    const name=te.encode(fn),crc=crc32(data),flags=0x0800,method=0,mtime=0,mdate=0;
+    const local=concatBytes([zipU32(0x04034b50),zipU16(20),zipU16(flags),zipU16(method),zipU16(mtime),zipU16(mdate),zipU32(crc),zipU32(data.length),zipU32(data.length),zipU16(name.length),zipU16(0),name,data]);
+    locals.push(local);
+    const central=concatBytes([zipU32(0x02014b50),zipU16(20),zipU16(20),zipU16(flags),zipU16(method),zipU16(mtime),zipU16(mdate),zipU32(crc),zipU32(data.length),zipU32(data.length),zipU16(name.length),zipU16(0),zipU16(0),zipU16(0),zipU16(0),zipU32(0),zipU32(offset),name]);
+    centrals.push(central);offset+=local.length;
+  }
+  const centralStart=offset,centralBlob=concatBytes(centrals),count=centrals.length;
+  if(count>65535)throw new Error('Archive contains too many entries for this local ZIP writer.');
+  const eocd=concatBytes([zipU32(0x06054b50),zipU16(0),zipU16(0),zipU16(count),zipU16(count),zipU32(centralBlob.length),zipU32(centralStart),zipU16(0)]);
+  return concatBytes([...locals,centralBlob,eocd]);
+}
 function extractGX(bytes){const raw=td.decode(bytes),m=raw.match(/(?:^|\n)(?=;|M(?:82|83|104|109|140|190)\b|G(?:28|90|91|92|0|1)\b)/i);if(!m)return null;const idx=m.index+(m[0].startsWith('\n')?1:0),t=raw.slice(idx);return gcodeSignal(t)>.08?t:null}
 async function readPrintFile(f){const bytes=new Uint8Array(await f.arrayBuffer()),lower=f.name.toLowerCase();if(bytes.length<2)throw new Error('The selected file is empty.');if(MODEL_EXT_RE.test(lower))throw new Error('That is a model file, not a sliced toolpath. Slice it first, then load the exported G-code.');if((bytes[0]===0x1f&&bytes[1]===0x8b)||/\.gz$/i.test(lower)){const out=await decompressBytes(bytes,'gzip'),t=td.decode(out);if(gcodeSignal(t)<.03)throw new Error('Compressed file opened, but it does not look like G-code.');return{text:t,inner:f.name.replace(/\.gz$/i,''),type:'gzip G-code'}}if((bytes[0]===0x50&&bytes[1]===0x4b)||/\.(zip|3mf|ufp)$/i.test(lower))return extractGcodeFromZip(bytes);if(/\.bgcode$/i.test(lower)||/\.x3g$/i.test(lower))throw new Error('This is binary machine code. Export normal text G-code from the slicer so it can be analysed and safely rewritten.');if(/\.gx$/i.test(lower)){const gx=extractGX(bytes);if(gx)return{text:gx,inner:f.name,type:'FlashForge GX payload'};throw new Error('GX file does not expose a readable text G-code payload. Export .g/.gcode instead.')}if(!bytesLookText(bytes))throw new Error('This looks binary or unsupported. Export sliced text G-code, gzip G-code, or an archive containing G-code.');const t=td.decode(bytes),signal=gcodeSignal(t);if(signal<.02&&!TEXT_EXT_RE.test(lower))throw new Error('Readable file, but it does not look like printer G-code.');return{text:t,inner:f.name,type:TEXT_EXT_RE.test(lower)?'text G-code':'content-detected G-code'}}
-async function loadFile(f){if(!f)return;sourceName=f.name;$('fileInfo').classList.remove('hidden');$('fileName').textContent=f.name;$('parseNotice').className='notice warn pulse';$('parseNotice').textContent='Reading file, detecting slicer/printer and building a geometry model…';['generate','dryRun','analysisBtn','exportReport'].forEach(id=>$(id).disabled=true);try{const got=await readPrintFile(f);sourceText=got.text;sourceType=got.type;analysis=analyse(sourceText);if(analysis.moves<1)throw new Error('The file loaded, but no extrusion toolpath was detected. It may be an unsliced project, start macro, or unsupported dialect.');$('parseNotice').className='notice ok';$('parseNotice').textContent=`Loaded ${got.type}${got.inner&&got.inner!==f.name?' • embedded '+got.inner:''}. Parsed ${analysis.moves.toLocaleString()} extrusion moves and ${Math.max(1,analysis.parts.length)} geometry cluster(s).`;applyDetection();['dryRun','analysisBtn','exportReport'].forEach(id=>$(id).disabled=false);updateAll()}catch(err){analysis=null;sourceText='';$('parseNotice').className='notice bad';$('parseNotice').textContent=err?.message||String(err);$('score').textContent='—';$('buildNotice').className='notice bad';$('buildNotice').textContent='File is not usable yet.'}}
+async function loadFile(f){if(!f)return;sourceName=f.name;sourceArchive=null;sourceArchiveGcodePath=null;sourceArchiveNames=new Set();$('fileInfo').classList.remove('hidden');$('fileName').textContent=f.name;$('parseNotice').className='notice warn pulse';$('parseNotice').textContent='Reading file, detecting slicer/printer and building a geometry model…';['generate','generatePackage','dryRun','analysisBtn','exportReport'].forEach(id=>$(id).disabled=true);try{const got=await readPrintFile(f);sourceText=got.text;sourceType=got.type;if(got.archive){sourceArchive=got.archive.bytes;sourceArchiveGcodePath=got.archive.gcodePath;sourceArchiveNames=got.archive.names||new Set()}analysis=analyse(sourceText);if(analysis.moves<1)throw new Error('The file loaded, but no extrusion toolpath was detected. It may be an unsliced project, start macro, or unsupported dialect.');$('parseNotice').className='notice ok';$('parseNotice').textContent=`Loaded ${got.type}${got.inner&&got.inner!==f.name?' • embedded '+got.inner:''}. Parsed ${analysis.moves.toLocaleString()} extrusion moves and ${Math.max(1,analysis.parts.length)} geometry cluster(s).`;applyDetection();['dryRun','analysisBtn','exportReport'].forEach(id=>$(id).disabled=false);$('generatePackage').disabled=!sourceArchive||!sourceArchiveGcodePath;updatePackageNotice();updateAll()}catch(err){analysis=null;sourceText='';sourceArchive=null;sourceArchiveGcodePath=null;sourceArchiveNames=new Set();$('parseNotice').className='notice bad';$('parseNotice').textContent=err?.message||String(err);$('score').textContent='—';$('buildNotice').className='notice bad';$('buildNotice').textContent='File is not usable yet.';updatePackageNotice()}}
 function applySafeRecommendations(){if(!recommendationActions.length)return;for(const fn of recommendationActions.slice(0,6))try{fn()}catch(e){}updateAll()}
 function savePreset(){const ids=['printer','firmware','plate','material','nozzle','copies','bedX','bedY','bedZ','maxSpeed','maxAccel','ejectAxis','ejectDir','pushPasses','pushZ','pushSpeed','clearance','laneOffset','protector','contact','vibrate','vibCycles','vibAmp','vibSpeed','shake','shakePasses','shakeSpeed','accel','coolMode','coolTemp','ambient','coolSeconds','dwell','fullFans','parkCool','earlyCool','earlyPct','earlyFan','homeXY','fullHome','restore','mesh','ejectFinal','optimize','optTerminal','optDedupe','optAccel','optTravel','optBlank','optComments','interPause','metaHeader','compatGuard','smartParts','localLearning'];const data={};ids.forEach(id=>{const el=$(id);data[id]=el.type==='checkbox'?el.checked:el.value});localStorage.setItem('autoprint-ai-preset',JSON.stringify(data));$('savePreset').textContent='Saved ✓';setTimeout(()=>$('savePreset').textContent='Save preset',1200)}
 function loadPreset(){try{const data=JSON.parse(localStorage.getItem('autoprint-ai-preset')||'{}');for(const [id,v]of Object.entries(data)){const el=$(id);if(!el)continue;if(el.type==='checkbox')el.checked=!!v;else el.value=v}updateAll();$('loadPreset').textContent='Loaded ✓';setTimeout(()=>$('loadPreset').textContent='Load preset',1200)}catch(e){}}
@@ -353,7 +443,7 @@ fillProfiles();
 $('printer').addEventListener('change',syncProfileInputs);
 $('drop').addEventListener('click',()=> $('file').click());$('file').addEventListener('change',e=>loadFile(e.target.files[0]));['dragenter','dragover'].forEach(ev=>$('drop').addEventListener(ev,e=>{e.preventDefault();$('drop').classList.add('drag')}));['dragleave','drop'].forEach(ev=>$('drop').addEventListener(ev,e=>{e.preventDefault();$('drop').classList.remove('drag')}));$('drop').addEventListener('drop',e=>loadFile(e.dataTransfer.files[0]));
 document.querySelectorAll('.tabbtn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('tab-'+b.dataset.tab).classList.add('active');if(b.dataset.tab==='overview')drawBed()}));
-document.querySelectorAll('input,select').forEach(el=>{if(el.id==='file'||el.id==='printer')return;el.addEventListener('input',()=>{if(analysis)updateAll()})});$('autopilot').addEventListener('change',()=>{if(analysis)applyDetection()});$('applyRecs').addEventListener('click',applySafeRecommendations);$('learnSuccess').addEventListener('click',()=>recordLearning(true));$('learnFail').addEventListener('click',()=>recordLearning(false));$('learnReset').addEventListener('click',()=>{localStorage.removeItem('autoprint-ai-learning');if(analysis)updateAll();else renderLearning()});$('savePreset').addEventListener('click',savePreset);$('loadPreset').addEventListener('click',loadPreset);$('resetPreset').addEventListener('click',()=>{localStorage.removeItem('autoprint-ai-preset');location.reload()});$('exportReport').addEventListener('click',exportReport);$('dryRun').addEventListener('click',dryRun);$('analysisBtn').addEventListener('click',()=>document.querySelector('.tabbtn[data-tab="preview"]').click());$('generate').addEventListener('click',()=>{if(!analysis)return;const out=buildOutput();downloadText(out,baseName()+`_SNOWY_AI_REPEAT_x${readSettings().copies}.gcode`)});
+document.querySelectorAll('input,select').forEach(el=>{if(el.id==='file'||el.id==='printer')return;el.addEventListener('input',()=>{if(analysis)updateAll()})});$('autopilot').addEventListener('change',()=>{if(analysis)applyDetection()});$('applyRecs').addEventListener('click',applySafeRecommendations);$('learnSuccess').addEventListener('click',()=>recordLearning(true));$('learnFail').addEventListener('click',()=>recordLearning(false));$('learnReset').addEventListener('click',()=>{localStorage.removeItem('autoprint-ai-learning');if(analysis)updateAll();else renderLearning()});$('savePreset').addEventListener('click',savePreset);$('loadPreset').addEventListener('click',loadPreset);$('resetPreset').addEventListener('click',()=>{localStorage.removeItem('autoprint-ai-preset');location.reload()});$('exportReport').addEventListener('click',exportReport);$('dryRun').addEventListener('click',dryRun);$('analysisBtn').addEventListener('click',()=>document.querySelector('.tabbtn[data-tab="preview"]').click());$('generatePackage').addEventListener('click',buildMappedPackage);$('generate').addEventListener('click',()=>{if(!analysis)return;const out=buildOutput();downloadText(out,baseName()+`_SNOWY_AI_REPEAT_x${readSettings().copies}.gcode`)});
 window.addEventListener('resize',()=>{if(analysis)drawBed()});
 window.AutoPrintAI={version:'3.1-sp',brand:'Snowy Prints',analyseText:analyse,loadTextForDebug:(t,n='debug.gcode')=>{sourceText=String(t||'');sourceName=n;analysis=analyse(sourceText);applyDetection();updateAll();return analysis},getAnalysis:()=>analysis,getPrediction:()=>lastPrediction,build:()=>analysis?buildOutput():'',ejection:()=>analysis?ejectionSequence():''};
 })();
